@@ -3,8 +3,8 @@ from fastapi.responses import FileResponse, JSONResponse
 import uuid
 import os
 import zipfile
-from backend.app.features.distribution.dist_service import DistributionService
-from backend.app.config.config import UPLOAD_DIR, OUTPUT_DIR
+from app.features.distribution.dist_service import DistributionService
+from app.config.config import UPLOAD_DIR, OUTPUT_DIR
 from jinja2 import Environment, FileSystemLoader
 
 router = APIRouter()

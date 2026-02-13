@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.app.features.distribution.dist_routes import router as dist_router
+from app.features.distribution.dist_routes import router as dist_router
 
 app = FastAPI(title="SBACEM Distribution Unifier")
 

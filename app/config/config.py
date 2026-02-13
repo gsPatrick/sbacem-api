@@ -3,7 +3,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/music_dist")
+# Production DB (interno ao VPS)
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://sbacem_user:SbacemSecurePassword2025!@localhost:5432/sbacem_db")
 UPLOAD_DIR = "uploads"
 OUTPUT_DIR = "outputs"
 

@@ -9,7 +9,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from jinja2 import Environment, FileSystemLoader
 from weasyprint import HTML
-from backend.app.config.config import UPLOAD_DIR, OUTPUT_DIR
+from app.config.config import UPLOAD_DIR, OUTPUT_DIR
 
 # ======================== CONSTANTS ========================
 CARMINE_RED = "#ab1a3e"
@@ -30,7 +30,7 @@ def load_asset_base64(asset_name):
 
     if not os.path.exists(file_path):
         # Try alternative path relative to backend/
-        alt_path = os.path.join('backend', 'app', 'templates', 'assets', asset_name)
+        alt_path = os.path.join('app', 'templates', 'assets', asset_name)
         if os.path.exists(alt_path):
             file_path = alt_path
         else:
