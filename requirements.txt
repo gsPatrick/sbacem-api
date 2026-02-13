@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+pandas
+openpyxl
+xlrd
+python-calamine
+sqlalchemy
+psycopg2-binary
+weasyprint
+jinja2
+matplotlib
+python-multipart
+aiofiles
+python-dotenv
