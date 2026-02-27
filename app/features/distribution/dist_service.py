@@ -80,10 +80,16 @@ class DistributionService:
 
     @staticmethod
     def process_zip(zip_path, job_id, progress_callback=None):
-        """Process a ZIP file (with nested ZIPs) and return a consolidated DataFrame."""
-        all_dataframes = []
+        """Process a ZIP file (with nested ZIPs) and return a consolidated DataFrame (or aggregate it efficiently via SQLite)."""
+        import sqlite3
+        import tempfile
+        
         errors = []
-
+        
+        # Create a temporary SQLite database to hold the processed records
+        db_path = os.path.join(tempfile.gettempdir(), f"dist_{job_id}.db")
+        conn = sqlite3.connect(db_path)
+        
         def get_dist_type(filename):
             """Infer distribution type from filename."""
             lower = filename.lower()
@@ -95,20 +101,35 @@ class DistributionService:
                 return "Sincronização"
             if "__dig" in lower or "digital" in lower:
                 return "Digital"
-            # Try to infer from suffix
             parts = lower.split('__')
             if len(parts) > 1:
                 return parts[-1].split('.')[0].replace('_', ' ').title()
             return "Outros"
 
-        def process_zip_recursive(zip_obj, parent_name="root"):
-            """Recursively processes a ZipFile object."""
-            all_files = zip_obj.namelist()
+        # Initialize table creation flag
+        table_created = False
+        
+        def save_chunk(df, file_name, parent_name, dist_type):
+            nonlocal table_created
+            df['source_file'] = file_name
+            df['source_container'] = parent_name
+            df['type'] = dist_type
+            
+            # Normalize column names to make them safe for SQLite
+            df.columns = [c.replace(' ', '_').replace('.', '_').replace('-', '_') for c in df.columns]
+            
+            if not table_created:
+                df.to_sql('distribution', conn, if_exists='replace', index=False)
+                table_created = True
+            else:
+                df.to_sql('distribution', conn, if_exists='append', index=False)
 
+        def process_zip_recursive(zip_obj, parent_name="root"):
+            all_files = zip_obj.namelist()
             for file_name in all_files:
                 lower_name = file_name.lower()
 
-                if file_name.endswith('.zip'):
+                if file_name.endswith('.zip') and '__macosx' not in lower_name:
                     try:
                         with zip_obj.open(file_name) as inner_data:
                             inner_bytes = io.BytesIO(inner_data.read())
@@ -117,29 +138,27 @@ class DistributionService:
                     except Exception as e:
                         errors.append(f"Error processing nested zip {file_name} in {parent_name}: {str(e)}")
 
-                elif file_name.endswith(('.xlsx', '.xls', '.csv')):
+                elif file_name.endswith(('.xlsx', '.xls', '.csv')) and '__macosx' not in lower_name:
                     if "summary" in lower_name or "overview" in lower_name:
                         continue
 
                     dist_type = get_dist_type(file_name)
-
                     try:
                         with zip_obj.open(file_name) as f:
-                            content = f.read()
                             if file_name.endswith('.csv'):
-                                df = pd.read_csv(io.BytesIO(content))
+                                # Read in chunks directly from the Zip stream to save system memory
+                                for chunk in pd.read_csv(f, chunksize=25000):
+                                    save_chunk(chunk, file_name, parent_name, dist_type)
                             else:
+                                content = f.read() # Excel usually needs standard seek, so we have to load into memory
                                 try:
                                     df = pd.read_excel(io.BytesIO(content), engine='calamine')
                                 except Exception:
                                     df = pd.read_excel(io.BytesIO(content))
-
-                            df['source_file'] = file_name
-                            df['source_container'] = parent_name
-                            df['type'] = dist_type
-                            all_dataframes.append(df)
+                                save_chunk(df, file_name, parent_name, dist_type)
                     except Exception as e:
                         errors.append(f"Error reading file {file_name} in {parent_name}: {str(e)}")
+
 
         try:
             with zipfile.ZipFile(zip_path, 'r') as main_zip:
@@ -151,7 +170,7 @@ class DistributionService:
                         progress_callback(idx + 1, total_top)
 
                     lower_name = name.lower()
-                    if name.endswith('.zip'):
+                    if name.endswith('.zip') and '__macosx' not in lower_name:
                         try:
                             with main_zip.open(name) as inner_data:
                                 inner_bytes = io.BytesIO(inner_data.read())
@@ -159,42 +178,64 @@ class DistributionService:
                                     process_zip_recursive(inner_zip, name)
                         except Exception as e:
                             errors.append(f"Error processing nested zip {name}: {str(e)}")
-                    elif name.endswith(('.xlsx', '.xls', '.csv')):
+                    elif name.endswith(('.xlsx', '.xls', '.csv')) and '__macosx' not in lower_name:
                         if "summary" in lower_name or "overview" in lower_name:
                             continue
                         
                         dist_type = get_dist_type(name)
-
                         try:
                             with main_zip.open(name) as f:
-                                content = f.read()
                                 if name.endswith('.csv'):
-                                    df = pd.read_csv(io.BytesIO(content))
+                                    for chunk in pd.read_csv(f, chunksize=25000):
+                                        save_chunk(chunk, name, 'root', dist_type)
                                 else:
+                                    content = f.read()
                                     try:
                                         df = pd.read_excel(io.BytesIO(content), engine='calamine')
                                     except Exception:
                                         df = pd.read_excel(io.BytesIO(content))
-                                df['source_file'] = name
-                                df['source_container'] = 'root'
-                                df['type'] = dist_type
-                                all_dataframes.append(df)
+                                    save_chunk(df, name, 'root', dist_type)
                         except Exception as e:
                             errors.append(f"Error reading file {name}: {str(e)}")
 
         except Exception as e:
             errors.append(f"Fatal error reading main zip: {str(e)}")
+            conn.close()
             return None, None, errors
 
-        if not all_dataframes:
+        if not table_created:
+            conn.close()
             return None, None, errors
 
-        master_df = pd.concat(all_dataframes, ignore_index=True)
+        # Load back the full combined dataframe from SQLite.
+        # This is more memory-efficient than holding multiple dataframes and copying them in pd.concat.
+        master_df = pd.read_sql_query("SELECT * FROM distribution", conn)
         master_df = master_df.fillna(0)
+        
+        # Restore standard column names expected by other functions (replace _ back to spaces/dots roughly)
+        # Note: A proper mapping would be safer, but we can dynamically detect standard ECAD names.
+        rename_map = {}
+        for col in master_df.columns:
+            if col == 'Full_Name': rename_map[col] = 'Full Name'
+            elif col == 'Net_Amount': rename_map[col] = 'Net Amount'
+            elif col == 'Net_amnt': rename_map[col] = 'Net amnt'
+            elif col == 'Play_count': rename_map[col] = 'Play count'
+            elif col == 'Ip_Base_Number': rename_map[col] = 'Ip Base Number'
+            elif col == 'Distribution_Pool_Name': rename_map[col] = 'Distribution Pool Name'
+            elif col == 'Date_from': rename_map[col] = 'Date from'
+            elif col == 'Date_to': rename_map[col] = 'Date to'
+        master_df = master_df.rename(columns=rename_map)
 
         consolidated_filename = f"consolidado_{job_id}.xlsx"
         consolidated_path = os.path.join(OUTPUT_DIR, consolidated_filename)
         master_df.to_excel(consolidated_path, index=False)
+        
+        conn.close()
+        
+        try:
+            os.remove(db_path)
+        except:
+            pass
 
         return master_df, consolidated_filename, errors
 
