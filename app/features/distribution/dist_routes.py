@@ -77,24 +77,27 @@ def background_process(job_id, zip_path, zip_filename=""):
         except Exception as e:
             errors.append(f"Error generating PDF for {name}: {str(e)}")
 
-    # Phase 3: ZIP all PDFs together
-    zip_filename_out = f"pdfs_{job_id}.zip"
-    zip_path_out = os.path.join(OUTPUT_DIR, zip_filename_out)
+    # Phase 3: Merge all PDFs together into a single PDF
+    merged_pdf_filename = f"pdfs_{job_id}.pdf"
+    merged_pdf_path = os.path.join(OUTPUT_DIR, merged_pdf_filename)
     try:
-        with zipfile.ZipFile(zip_path_out, 'w') as zip_f:
-            for pdf in pdf_files:
-                zip_f.write(pdf, os.path.basename(pdf))
+        from PyPDF2 import PdfMerger
+        merger = PdfMerger()
+        for pdf in pdf_files:
+            merger.append(pdf)
+        merger.write(merged_pdf_path)
+        merger.close()
     except Exception as e:
-        errors.append(f"Error creating ZIP with PDFs: {str(e)}")
+        errors.append(f"Error merging PDFs: {str(e)}")
 
     jobs[job_id].update({
         "status": "completed",
         "consolidated": consolidated_file,
-        "zip_pdfs": zip_filename_out,
+        "zip_pdfs": merged_pdf_filename,
         "total_holders": total_holders,
         "total_pdfs": len(pdf_files),
         "errors": errors,
-        "message": f"Concluído: {len(pdf_files)} PDFs gerados com sucesso."
+        "message": f"Concluído: {len(pdf_files)} PDFs gerados e mesclados com sucesso."
     })
 
 
@@ -139,5 +142,5 @@ async def download_pdfs(job_id: str):
     job = jobs.get(job_id)
     if job and job["status"] == "completed":
         path = os.path.join(OUTPUT_DIR, job["zip_pdfs"])
-        return FileResponse(path, filename="relatorios_pdf.zip")
+        return FileResponse(path, filename="relatorios_pdf.pdf")
     return JSONResponse({"error": "File not ready or not found"}, status_code=404)
