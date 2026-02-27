@@ -3,6 +3,8 @@ from fastapi.responses import FileResponse, JSONResponse
 import uuid
 import os
 import zipfile
+import sqlite3
+import pandas as pd
 from app.features.distribution.dist_service import DistributionService
 from app.config.config import UPLOAD_DIR, OUTPUT_DIR
 from jinja2 import Environment, FileSystemLoader
@@ -31,27 +33,51 @@ def background_process(job_id, zip_path, zip_filename=""):
 
     # Phase 1: Extract and consolidate all spreadsheets
     jobs[job_id]["message"] = "Extraindo e consolidando planilhas..."
-    master_df, consolidated_file, errors = service.process_zip(
+    db_path, consolidated_file, errors = service.process_zip(
         zip_path, job_id, progress_callback=progress_cb
     )
 
-    if master_df is None:
+    if db_path is None:
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["errors"] = errors
         return
 
-    # Phase 2: Group by holder and generate individual PDFs
-    name_col = 'Full Name' if 'Full Name' in master_df.columns else 'Titular'
-    holders = master_df.groupby(name_col)
+    # Phase 2: Group by holder and generate individual PDFs from SQLite
+    conn = sqlite3.connect(db_path)
+    # Get distinct holders
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT Full_Name FROM distribution")
+        holders_names = [row[0] for row in cursor.fetchall()]
+    except Exception as e:
+        errors.append(f"Error querying holders: {str(e)}")
+        holders_names = []
 
     pdf_files = []
     pdf_dir = os.path.join(OUTPUT_DIR, f"pdfs_{job_id}")
     os.makedirs(pdf_dir, exist_ok=True)
 
-    total_holders = len(holders)
+    total_holders = len(holders_names)
 
-    for i, (name, group) in enumerate(holders):
+    for i, name in enumerate(holders_names):
         jobs[job_id]["message"] = f"Gerando PDF {i+1} de {total_holders}: {name}..."
+
+        # Query only this holder's data
+        group = pd.read_sql_query("SELECT * FROM distribution WHERE Full_Name = ?", conn, params=(name,))
+        group = group.fillna(0)
+        
+        # Rename columns to match what templates expect
+        rename_map = {}
+        for col in group.columns:
+            if col == 'Full_Name': rename_map[col] = 'Full Name'
+            elif col == 'Net_Amount': rename_map[col] = 'Net Amount'
+            elif col == 'Net_amnt': rename_map[col] = 'Net amnt'
+            elif col == 'Play_count': rename_map[col] = 'Play count'
+            elif col == 'Ip_Base_Number': rename_map[col] = 'Ip Base Number'
+            elif col == 'Distribution_Pool_Name': rename_map[col] = 'Distribution Pool Name'
+            elif col == 'Date_from': rename_map[col] = 'Date from'
+            elif col == 'Date_to': rename_map[col] = 'Date to'
+        group = group.rename(columns=rename_map)
 
         # Generate charts for this holder
         chart_donut, chart_bar = service.generate_charts(group)
@@ -86,6 +112,15 @@ def background_process(job_id, zip_path, zip_filename=""):
                 zip_f.write(pdf, os.path.basename(pdf))
     except Exception as e:
         errors.append(f"Error creating ZIP with PDFs: {str(e)}")
+
+    conn.close()
+    
+    # Cleanup SQLite DB
+    try:
+        if os.path.exists(db_path):
+            os.remove(db_path)
+    except:
+        pass
 
     jobs[job_id].update({
         "status": "completed",

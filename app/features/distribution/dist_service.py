@@ -207,37 +207,40 @@ class DistributionService:
             conn.close()
             return None, None, errors
 
-        # Load back the full combined dataframe from SQLite.
-        # This is more memory-efficient than holding multiple dataframes and copying them in pd.concat.
-        master_df = pd.read_sql_query("SELECT * FROM distribution", conn)
-        master_df = master_df.fillna(0)
-        
-        # Restore standard column names expected by other functions (replace _ back to spaces/dots roughly)
-        # Note: A proper mapping would be safer, but we can dynamically detect standard ECAD names.
-        rename_map = {}
-        for col in master_df.columns:
-            if col == 'Full_Name': rename_map[col] = 'Full Name'
-            elif col == 'Net_Amount': rename_map[col] = 'Net Amount'
-            elif col == 'Net_amnt': rename_map[col] = 'Net amnt'
-            elif col == 'Play_count': rename_map[col] = 'Play count'
-            elif col == 'Ip_Base_Number': rename_map[col] = 'Ip Base Number'
-            elif col == 'Distribution_Pool_Name': rename_map[col] = 'Distribution Pool Name'
-            elif col == 'Date_from': rename_map[col] = 'Date from'
-            elif col == 'Date_to': rename_map[col] = 'Date to'
-        master_df = master_df.rename(columns=rename_map)
-
         consolidated_filename = f"consolidado_{job_id}.xlsx"
         consolidated_path = os.path.join(OUTPUT_DIR, consolidated_filename)
-        master_df.to_excel(consolidated_path, index=False)
         
-        conn.close()
-        
+        # Write Excel in chunks to avoid OOM
         try:
-            os.remove(db_path)
-        except:
-            pass
+            # We use a context manager for the writer
+            with pd.ExcelWriter(consolidated_path, engine='openpyxl') as writer:
+                # Check column names from one small query first
+                sample = pd.read_sql_query("SELECT * FROM distribution LIMIT 1", conn)
+                cols = sample.columns
+                
+                start_row = 0
+                for chunk in pd.read_sql_query("SELECT * FROM distribution", conn, chunksize=10000):
+                    # Rename columns in chunk as we did before
+                    rename_map = {}
+                    for col in chunk.columns:
+                        if col == 'Full_Name': rename_map[col] = 'Full Name'
+                        elif col == 'Net_Amount': rename_map[col] = 'Net Amount'
+                        elif col == 'Net_amnt': rename_map[col] = 'Net amnt'
+                        elif col == 'Play_count': rename_map[col] = 'Play count'
+                        elif col == 'Ip_Base_Number': rename_map[col] = 'Ip Base Number'
+                        elif col == 'Distribution_Pool_Name': rename_map[col] = 'Distribution Pool Name'
+                        elif col == 'Date_from': rename_map[col] = 'Date from'
+                        elif col == 'Date_to': rename_map[col] = 'Date to'
+                    chunk = chunk.rename(columns=rename_map)
+                    
+                    chunk.to_excel(writer, index=False, startrow=start_row, header=(start_row == 0))
+                    start_row += len(chunk)
+        except Exception as e:
+            errors.append(f"Error writing consolidated excel: {str(e)}")
 
-        return master_df, consolidated_filename, errors
+        conn.close()
+        # We return the db_path so the router can query it holder-by-holder
+        return db_path, consolidated_filename, errors
 
     # =================== CHART GENERATION ==================
     @staticmethod
