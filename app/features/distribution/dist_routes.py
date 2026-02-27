@@ -8,7 +8,7 @@ from app.config.config import UPLOAD_DIR, OUTPUT_DIR
 from jinja2 import Environment, FileSystemLoader
 
 router = APIRouter()
-template_env = Environment(loader=FileSystemLoader('backend/app/templates'))
+template_env = Environment(loader=FileSystemLoader('app/templates'))
 
 # Temporary in-memory job storage (should use DB in prod)
 jobs = {}
